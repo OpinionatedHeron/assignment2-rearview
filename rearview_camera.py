@@ -1,13 +1,17 @@
 import BlynkLib
-import time
-import cv2
+import paho.mqtt.client as mqtt
+from urllib.parse import urlparse
+from datetime import datetime
 from sense_hat import SenseHat
 from picamera2 import Picamera2
 from flask import Flask, Response
 
 #initialise SenseHAT
 sense = SenseHat()
-sense.clear()
+VIDEO_PATH="./videos/motion_video.h264"
+
+URL = urlparse("mqtt://broker.emqx.io:1883/opheron/home/cameras/cam1")
+BASE_TOPIC = URL.path[1:]
 
 #Blynk authentication token
 BLYNK_AUTH = 'wCsvZULPg7-9L5mKwR9ZOEfwA_aV7qV3'
