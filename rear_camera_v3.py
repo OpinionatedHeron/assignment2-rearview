@@ -122,7 +122,7 @@ SIMPLE_PAGE = """\
 <body>
 <h1>RPi - Rearview Camera Stream</h1>
 <p>Blynk connection active - check your Blynk app for data</p>
-<img src="rearview.mjpg" width="640" height="180" />
+<img src="rearview.mjpg" width="640" height="480" />
 </body>
 </html>
 """
