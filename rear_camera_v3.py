@@ -8,7 +8,7 @@ import logging
 import socketserver
 import time
 import threading
-from threading import Condition
+from threading import Condition, Event
 from http import server
 
 from sense_hat import SenseHat
@@ -26,6 +26,12 @@ blynk = Blynk(BLYNK_AUTH)
 #Initialize SenseHat
 sense = SenseHat()
 
+#Configure LEDs
+RED = (255, 0, 0)
+GREEN = (0, 255, 0)
+BLUE = (0, 0, 255)
+BLANK = (0, 0, 0)
+
 #Source: https://medium.com/@tauseefahmad12/object-detection-using-mobilenet-ssd-e75b177567ee 
 #Initialize object detection
 net = cv2.dnn.readNetFromCaffe('models/MobileNetSSD_deploy.prototxt', 
@@ -41,7 +47,11 @@ classNames = { 0: 'background',
     17: 'sheep', 18: 'sofa', 19: 'train', 20: 'tvmonitor'}
 
 #Virtual pins for Blynk
-MOVE_STATUS
+MOVE_STATUS = 0
+PROXIMITY_ALERT = 1
+OBJECT_COUNT = 2
+VIDEO_STATUS = 3
+MOVEMENT = 4
 
 #HTML to create streaming webpage
 PAGE="""\
@@ -71,7 +81,7 @@ class DetectMovement:
 
         #Monitoring in separate thread
         self.running = True
-        self.monitor_thread = threading.Thread(target=self.monitor_movement, daemon=True)
+        self.monitor_thread = threading.Thread(target=self.check_accelerometer, daemon=True)
         self.monitor_thread.start()
 
     #Get base reading when program starts
@@ -103,18 +113,18 @@ class DetectMovement:
             elif time.time() - self.last_move_time > self.cooling_period:
                 self.move_detected.clear()
 
-            blynk.virtual_write(MOVE_PIN, avg_magnitude)
+            blynk.virtual_write(MOVEMENT, avg_magnitude)
 
             time.sleep(0.1)
 
         #Check is device is moving
-        def is_move_detected(self):
-            return self.move_detected.is_set() or \
-                (time.time() - self.last_move_time < self.cooling_period)
+    def is_move_detected(self):
+        return self.move_detected.is_set() or \
+            (time.time() - self.last_move_time < self.cooling_period)
         
-        def stop(self):
-            self.running = False
-            self.monitor_thread.join()
+    def stop(self):
+        self.running = False
+        self.monitor_thread.join()
 
 
 class VideoOutput(io.BufferedIOBase):
@@ -131,10 +141,90 @@ class VideoOutput(io.BufferedIOBase):
     def update_blynk(self, detection_info, move_status):
         current_time = time.time()
 
+        if current_time - self.last_blynk_update >= self.blynk_update_interval:
+            blynk.virtual_write(MOVE_STATUS, 1 if move_status else 0)
+            blynk.virtual_write(VIDEO_STATUS, "Active" if self.video_active else "Standby")
+
+            if move_status:
+                blynk.virtual_write(PROXIMITY_ALERT, 1 if detection_info['close_object'] else 0)
+                blynk.virtual_write(OBJECT_COUNT, detection_info['object_count'])
+
+            self.last_blynk_update = current_time
+
     def write(self, buf):
+        frame = cv2.imdecode(np.frombuffer(buf, np.uint8), cv2.IMREAD_COLOR)
+
+        move_detected = self.move_detector.is_move_detected()
+
+        if move_detected:
+            if not self.video_active:
+                self.video_active = True
+                sense.clear(BLUE)
+
+            processed_frame = self.process_frame(frame, True)
+        else:
+            if self.video_active:
+                self.video_active = False
+                sense.clear(BLANK)
+            processed_frame = frame
+
+        _, processed_buf = cv2.imencode('.jpg', processed_frame)
+
         with self.condition:
-            self.frame = buf
+            self.frame = processed_buf.tobytes()
             self.condition.notify_all()
+
+    def process_frame(self, frame, detect_objects=True):
+        if not detect_objects:
+            return frame
+        
+        #Preparing object detection
+        (h,w) = frame.shape[:2]
+        blob = cv2.dnn.blobFromImage(frame, 0.007843, (300, 300), 127.5)
+
+        #Initialize detection dictionary
+        detection_info = {
+            'close_object': False,
+            'object_count': 0
+        }
+
+        #Run object detection
+        net.setInput(blob)
+        detection = net.forward()
+
+        #Process objects detected in frame
+        for i in range(detection.shape[2]):
+            confidence = detection[0, 0, i, 2]
+
+            if confidence > 0.5:
+                detection_info['object_count'] += 1
+
+                class_id = int(detection[0, 0, i, 1])
+                class_name = classNames[class_id]
+
+                box = detection[0, 0, i, 3:7] * np.array([w, h, w, h])
+                (startX, startY, endX, endY) = box.astype("int")
+
+                object_size = ((endX - startX) * (endY - startY)) / (w * h)
+
+                if object_size > self.proximity_check:
+                    detection_info['close_object'] = True
+
+                cv2.rectangle(frame, (startX, startY), (endX, endY), (0, 255, 0), 2)
+                label = f"{class_name}: {confidence * 100:.2f}%"
+
+                y = startY - 10 if startY - 10 > 10 else startY + 10
+                cv2.putText(frame, label, (startX, y), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+        if detection_info['close_object']:
+            sense.clear(RED)
+        else:
+            sense.clear(BLUE)
+
+        self.update_blynk(detection_info, True)
+
+        return frame
 
 class StreamingHandler(server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -180,15 +270,32 @@ class StreamingServer(socketserver.ThreadingMixIn, server.HTTPServer):
     allow_reuse_address = True
     daemon_threads = True
 
+def main():
+    move_detector = DetectMovement(
+        min_movement=0.2,
+        num_readings=3,
+        cooling_period=20
+    )
 
-picam2 = Picamera2()
-picam2.configure(picam2.create_video_configuration(main={"size": (640, 480)}))
-output = StreamingOutput()
-picam2.start_recording(JpegEncoder(), FileOutput(output))
+    global output
 
-try:
-    address = ('', 5000)
-    server = StreamingServer(address, StreamingHandler)
-    server.serve_forever()
-finally:
-    picam2.stop_recording()
+    picam2 = Picamera2()
+    picam2.configure(picam2.create_video_configuration(main={"size": (640, 480)}))
+    output = VideoOutput(move_detector)
+
+    picam2.start_recording(JpegEncoder(), FileOutput(output))
+
+    blynk_thread = threading.Thread(target=blynk.run, daemon=True)
+    blynk_thread.start()
+
+    try:
+        address = ('', 5000)
+        server = StreamingServer(address, StreamingHandler)
+        server.serve_forever()
+    finally:
+        picam2.stop_recording()
+        move_detector.stop()
+        sense.clear()
+
+if __name__ == '__main__':
+    main()
