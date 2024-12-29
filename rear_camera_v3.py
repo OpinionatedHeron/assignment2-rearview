@@ -128,7 +128,7 @@ SIMPLE_PAGE = """\
 """
 
 class DetectMovement:
-    def __init__(self, min_movement=0.05, num_readings=3, cooling_period=20):
+    def __init__(self, min_movement=0.05, num_readings=5, cooling_period=20):
         #Initialize accelerometer - which detects if RPi moves
         #Cooling_period - how long after movement stops that video keeps recording
         self.sense = SenseHat()
@@ -197,6 +197,7 @@ class VideoOutput(io.BufferedIOBase):
         self.blynk_update_interval = 1
         self.move_detector = move_detector
         self.video_active = False
+        self.current_frame = None
 
         #noticed a big delay with object detection
         #needed to improve frame processing
@@ -259,28 +260,37 @@ class VideoOutput(io.BufferedIOBase):
                     self.blynk_connected = False
 
     def write(self, buf):
-        frame = cv2.imdecode(np.frombuffer(buf, np.uint8), cv2.IMREAD_COLOR)
-        self.frame_counter += 1
 
         move_detected = self.move_detector.is_move_detected()
 
-        if move_detected and (self.frame_counter % self.process_every_n_frames == 0):
+        if move_detected:
+            frame = cv2.imdecode(np.frombuffer(buf, np.uint8), cv2.IMREAD_COLOR)
+            self.frame_counter += 1
+
             if not self.video_active:
                 self.video_active = True
                 sense.clear(BLUE)
 
-            processed_frame = self.process_frame(frame, True)
+            if self.frame_counter % self.process_every_n_frames == 0:
+                processed_frame = self.process_frame(frame, True)
+            else:
+                processed_frame = frame
+
+            _, processed_buf = cv2.imencode('.jpg', processed_frame)
+
+            with self.condition:
+                self.frame = processed_buf.tobytes()
+                self.current_frame = self.frame
+                self.condition.notify_all()
         else:
-            if self.video_active and not move_detected:
+            if self.video_active:
                 self.video_active = False
                 sense.clear(BLANK)
-            processed_frame = frame
 
-        _, processed_buf = cv2.imencode('.jpg', processed_frame)
+            with self.condition:
+                self.frame = self.current_frame if self.current_frame else None
+                self.condition.notify_all()
 
-        with self.condition:
-            self.frame = processed_buf.tobytes()
-            self.condition.notify_all()
 
     def process_frame(self, frame, detect_objects=True):
         if not detect_objects:
@@ -422,7 +432,7 @@ class StreamingServer(socketserver.ThreadingMixIn, server.HTTPServer):
 def main():
     move_detector = DetectMovement(
         min_movement=0.05,
-        num_readings=3,
+        num_readings=5,
         cooling_period=20
     )
 
@@ -433,6 +443,7 @@ def main():
     output = VideoOutput(move_detector)
 
     picam2.start_recording(JpegEncoder(), FileOutput(output))
+    sense.clear(BLANK)
 
     blynk_thread = threading.Thread(target=blynk.run, daemon=True)
     blynk_thread.start()
