@@ -199,22 +199,22 @@ class VideoOutput(io.BufferedIOBase):
         self.video_active = False
 
     #Track Blynk status so the program still works if Blynk fails
-    self.blynk_connected = True
-    self.current_data = {
-        'move_status': False,
-        'proximity_alert': False,
-        'object_count': 0,
-        'video_status': 'Standby',
-        'movement': 0.0
-    }
+        self.blynk_connected = True
+        self.current_data = {
+            'move_status': False,
+            'proximity_alert': False,
+            'object_count': 0,
+            'video_status': 'Standby',
+            'movement': 0.0
+        }
 
-    try:
-        self.blynk = Blynk(BLYNK_AUTH)
-        blynk_thread = threading.Thread(target=self.run_blynk, daemon=True)
-        blynk_thread.start()
-    except Exception as e:
-        logging.error(f"Failed to initialize Blynk: {e}")
-        self.blynk_connected = False
+        try:
+            self.blynk = Blynk(BLYNK_AUTH)
+            blynk_thread = threading.Thread(target=self.run_blynk, daemon=True)
+            blynk_thread.start()
+        except Exception as e:
+            logging.error(f"Failed to initialize Blynk: {e}")
+            self.blynk_connected = False
 
     def run_blynk(self):
         try:
