@@ -128,7 +128,7 @@ SIMPLE_PAGE = """\
 """
 
 class DetectMovement:
-    def __init__(self, min_movement=0.2, num_readings=3, cooling_period=20):
+    def __init__(self, min_movement=0.05, num_readings=3, cooling_period=20):
         #Initialize accelerometer - which detects if RPi moves
         #Cooling_period - how long after movement stops that video keeps recording
         self.sense = SenseHat()
@@ -421,7 +421,7 @@ class StreamingServer(socketserver.ThreadingMixIn, server.HTTPServer):
 
 def main():
     move_detector = DetectMovement(
-        min_movement=0.2,
+        min_movement=0.05,
         num_readings=3,
         cooling_period=20
     )
