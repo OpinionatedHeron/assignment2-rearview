@@ -192,11 +192,16 @@ class VideoOutput(io.BufferedIOBase):
     def __init__(self, move_detector):
         self.frame = None
         self.condition = Condition()
-        self.proximity_check = 3
+        self.proximity_check = 0.15
         self.last_blynk_update = 0
         self.blynk_update_interval = 1
         self.move_detector = move_detector
         self.video_active = False
+
+        #noticed a big delay with object detection
+        #needed to improve frame processing
+        self.frame_counter = 0
+        self.process_every_n_frames = 3
 
     #Track Blynk status so the program still works if Blynk fails
         self.blynk_connected = True
@@ -255,17 +260,18 @@ class VideoOutput(io.BufferedIOBase):
 
     def write(self, buf):
         frame = cv2.imdecode(np.frombuffer(buf, np.uint8), cv2.IMREAD_COLOR)
+        self.frame_counter += 1
 
         move_detected = self.move_detector.is_move_detected()
 
-        if move_detected:
+        if move_detected and (self.frame_counter % self.process_every_n_frames == 0):
             if not self.video_active:
                 self.video_active = True
                 sense.clear(BLUE)
 
             processed_frame = self.process_frame(frame, True)
         else:
-            if self.video_active:
+            if self.video_active and not move_detected:
                 self.video_active = False
                 sense.clear(BLANK)
             processed_frame = frame
