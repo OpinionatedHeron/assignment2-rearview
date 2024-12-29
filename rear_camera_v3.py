@@ -192,7 +192,7 @@ class VideoOutput(io.BufferedIOBase):
     def __init__(self, move_detector):
         self.frame = None
         self.condition = Condition()
-        self.proximity_check = 0.15
+        self.proximity_check = 0.2
         self.last_blynk_update = 0
         self.blynk_update_interval = 1
         self.move_detector = move_detector
