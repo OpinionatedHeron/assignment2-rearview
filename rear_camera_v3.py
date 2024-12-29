@@ -60,19 +60,43 @@ PAGE="""\
 <head>
 <title>Streaming - Rear View</title>
 <script>
+function updateStatusDisplay(elementId, value, isBoolean = false) {
+    const element = document.getElementById(elementId);
+    if (isBoolean) {
+        element.textContent = value ? 'Yes' : 'No';
+        element.className = 'status-value ' + (value ? 'active' : 'inactive');
+    }else {
+        element.textContent = value;
+    }
+}
+
 function fetchDAta() {
     fetch('/data.json')
         .then(response => response.json())
         .then(data => {
-            document.getELementById('moveStatus').innerText = data.move_status ? 'Detected' : 'Not Detected';
-            document.getELementById('proximityAlert').innerText = data.proximity_alert ? 'Yes' : 'No';
-            document.getELementById('objectCount').innerText = data.object_count;
-            document.getELementById('videoStatus').innerText = data.video_status;
-            document.getELementById('movement').innerText = data.movement.toFixed(2);
+            updateStatusDisplay('moveStatus', data.move_status, true);
+            updateStatusDisplay('proximityAlert', data.proximity_alert, true);
+            updateStatusDisplay('objectCount', data.object_count);
+            updateStatusDisplay('videoStatus', 
+                data.video_status, === 'Active' ? 'Active' : 'Standby',
+                true);
+            updateStatusDisplay('movement', 
+                typeof data.movement === 'number' ? 
+                data.movement.toFixed(2) : data.movement);
         })
-        .catch(error => console.error('Error fetching data:', error));
+        .catch(error => {
+            console.error('Error fetching data:', error);
+            document.querySelectorAll('.status-value').forEach(element => {
+                element.textContent = 'Error loading data';
+                element.className = 'status-value inactive';
+            });
+        });
 }
-setInterval(fetchData, 1000);
+
+document.addEventListener('DOMContentLoaded', () => {
+    fetchData();
+    setInterval(fetchData, 1000);
+});
 </script>
 </head>
 <body>
@@ -86,6 +110,19 @@ setInterval(fetchData, 1000);
     <li><strong>Video Status:</strong> <span id="videoStatus">Loading...</span></li>
     <li><strong>Movement:</strong> <span id="movement">Loading...</span></li>
 </ul>
+</body>
+</html>
+"""
+#Creating a separate page for when Blynk works and all data isn't required
+SIMPLE_PAGE = """\
+<html>
+<head>
+<title>Streaming - Rear View</title>
+</head>
+<body>
+<h1>RPi - Rearview Camera Stream</h1>
+<p>Blynk connection active - check your Blynk app for data</p>
+<img src="rearview.mjpg" width="640" height="180" />
 </body>
 </html>
 """
@@ -161,19 +198,60 @@ class VideoOutput(io.BufferedIOBase):
         self.move_detector = move_detector
         self.video_active = False
 
+    #Track Blynk status so the program still works if Blynk fails
+    self.blynk_connected = True
+    self.current_data = {
+        'move_status': False,
+        'proximity_alert': False,
+        'object_count': 0,
+        'video_status': 'Standby',
+        'movement': 0.0
+    }
+
+    try:
+        self.blynk = Blynk(BLYNK_AUTH)
+        blynk_thread = threading.Thread(target=self.run_blynk, daemon=True)
+        blynk_thread.start()
+    except Exception as e:
+        logging.error(f"Failed to initialize Blynk: {e}")
+        self.blynk_connected = False
+
+    def run_blynk(self):
+        try:
+            self.blynk.run()
+        except Exception as e:
+            logging.error(f"Failed to initialize Blynk: {e}")
+            self.blynk_connected = False
+
+    def update_data(self, detection_info, move_status):
+        self.current_data.update({
+            'move_status': move_status,
+            'proximity_alert': detection_info.get('close_object', False),
+            'object_count': detection_info.get('object_count', 0),
+            'video_status': 'Active' if self.video_active else 'Standby',
+            'movement': self.move_detector.readings_buffer[-1] if self.move_detector.readings_buffer else 0.0
+        })
+
     #Update Blynk
     def update_blynk(self, detection_info, move_status):
         current_time = time.time()
 
+        self.update_data(detection_info, move_status)
+
         if current_time - self.last_blynk_update >= self.blynk_update_interval:
-            blynk.virtual_write(MOVE_STATUS, 1 if move_status else 0)
-            blynk.virtual_write(VIDEO_STATUS, "Active" if self.video_active else "Standby")
+            if self.blynk_connected:
+                try:
+                    self.blynk.virtual_write(MOVE_STATUS, 1 if move_status else 0)
+                    self.blynk.virtual_write(VIDEO_STATUS, "Active" if self.video_active else "Standby")
 
-            if move_status:
-                blynk.virtual_write(PROXIMITY_ALERT, 1 if detection_info['close_object'] else 0)
-                blynk.virtual_write(OBJECT_COUNT, detection_info['object_count'])
+                    if move_status:
+                        self.blynk.virtual_write(PROXIMITY_ALERT, 1 if detection_info['close_object'] else 0)
+                        self.blynk.virtual_write(OBJECT_COUNT, detection_info['object_count'])
 
-            self.last_blynk_update = current_time
+                    self.last_blynk_update = current_time
+                except Exception as e:
+                    logging.error(f"Failed to initialize Blynk: {e}")
+                    self.blynk_connected = False
 
     def write(self, buf):
         frame = cv2.imdecode(np.frombuffer(buf, np.uint8), cv2.IMREAD_COLOR)
@@ -257,12 +335,22 @@ class StreamingHandler(server.BaseHTTPRequestHandler):
             self.send_header('Location', '/index.html')
             self.end_headers()
         elif self.path == '/index.html':
-            content = PAGE.encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/html')
-            self.send_header('Content-Length', len(content))
-            self.end_headers()
-            self.wfile.write(content)
+
+            if not output.blynk_connected:
+                content = PAGE.encode('utf-8')
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html')
+                self.send_header('Content-Length', len(content))
+                self.end_headers()
+                self.wfile.write(content)
+            else:
+                content = SIMPLE_PAGE.encode('utf-8')
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html')
+                self.send_header('Content-Length', len(content))
+                self.end_headers()
+                self.wfile.write(content)
+
         elif self.path == '/rearview.mjpg':
             self.send_response(200)
             self.send_header('Age', 0)
@@ -287,22 +375,39 @@ class StreamingHandler(server.BaseHTTPRequestHandler):
                     self.client_address, str(e))
 
         elif self.path == '/data.json':
+            if not output.blynk_connected:
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps(output.current_data).encode('utf-8'))
+            else:
+                self.send_error(503)
+                self.end_headers()
+        elif self.path == '/rearview.mjpg':
             self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
+            self.send_header('Age', 0)
+            self.send_header('Cache-Control', 'no-cache, private')
+            self.send_header('Pragma', 'no-cache')
+            self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=FRAME')
             self.end_headers()
-            #Blynk data as JSON as my Blynk could no longer recieve messages
-            data = {
-                'move_status': blynk.virtual_read(MOVE_STATUS),
-                'proximity_alert': blynk.virtual_read(PROXIMITY_ALERT),
-                'object_count': blynk.virutal_read(OBJECT_COUNT),
-                'video_status': blynk.virtual_read(VIDEO_STATUS),
-                'movement': blynk.virtual_read(MOVEMENT)
-            }
-            self.wfile.write(json.dumps(data).encode('utf-8'))
+            try:
+                while True:
+                    with output.condition:
+                        output.condition.wait()
+                        frame = output.frame
+                    self.wfile.write(b'--FRAME\r\n')
+                    self.send_header('Content-Type', 'image/jpeg')
+                    self.send_header('Content-Length', len(frame))
+                    self.end_headers()
+                    self.wfile.write(frame)
+                    self.wfile.write(b'\r\n')
+            except Exception as e:
+                logging.warning(
+                    'Removed streaming client %s: %s',
+                    self.client_address, str(e))
         else:
             self.send_error(404)
             self.end_headers()
-
 
 class StreamingServer(socketserver.ThreadingMixIn, server.HTTPServer):
     allow_reuse_address = True
