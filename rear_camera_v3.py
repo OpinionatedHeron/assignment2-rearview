@@ -29,7 +29,6 @@ sense = SenseHat()
 #Configure LEDs
 RED = (255, 0, 0)
 GREEN = (0, 255, 0)
-BLUE = (0, 0, 255)
 BLANK = (0, 0, 0)
 
 #Source: https://medium.com/@tauseefahmad12/object-detection-using-mobilenet-ssd-e75b177567ee 
@@ -269,7 +268,7 @@ class VideoOutput(io.BufferedIOBase):
 
             if not self.video_active:
                 self.video_active = True
-                sense.clear(BLUE)
+                sense.clear(GREEN)
 
             if self.frame_counter % self.process_every_n_frames == 0:
                 processed_frame = self.process_frame(frame, True)
@@ -338,7 +337,7 @@ class VideoOutput(io.BufferedIOBase):
         if detection_info['close_object']:
             sense.clear(RED)
         else:
-            sense.clear(BLUE)
+            sense.clear(GREEN)
 
         self.update_blynk(detection_info, True)
 
