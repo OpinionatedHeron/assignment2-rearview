@@ -54,14 +54,38 @@ VIDEO_STATUS = 3
 MOVEMENT = 4
 
 #HTML to create streaming webpage
+#Adding data from camera in case Blynk Fails
 PAGE="""\
 <html>
 <head>
 <title>Streaming - Rear View</title>
+<script>
+function fetchDAta() {
+    fetch('/data.json')
+        .then(response => response.json())
+        .then(data => {
+            document.getELementById('moveStatus').innerText = data.move_status ? 'Detected' : 'Not Detected';
+            document.getELementById('proximityAlert').innerText = data.proximity_alert ? 'Yes' : 'No';
+            document.getELementById('objectCount').innerText = data.object_count;
+            document.getELementById('videoStatus').innerText = data.video_status;
+            document.getELementById('movement').innerText = data.movement.toFixed(2);
+        })
+        .catch(error => console.error('Error fetching data:', error));
+}
+setInterval(fetchData, 1000);
+</script>
 </head>
 <body>
 <h1>RPi - Testing Rearview & Motion Detection</h1>
 <img src="rearview.mjpg" width="640" height="480" />
+<h2>Rearview Camera Data</h2>
+<ul>
+    <li><strong>Move Status:</strong> <span id="moveStatus">Loading...</span></li>
+    <li><strong>Proximity Alert:</strong> <span id="proximityAlert">Loading...</span></li>
+    <li><strong>Object Count:</strong> <span id="objectCount">Loading...</span></li>
+    <li><strong>Video Status:</strong> <span id="videoStatus">Loading...</span></li>
+    <li><strong>Movement:</strong> <span id="movement">Loading...</span></li>
+</ul>
 </body>
 </html>
 """
@@ -131,7 +155,7 @@ class VideoOutput(io.BufferedIOBase):
     def __init__(self, move_detector):
         self.frame = None
         self.condition = Condition()
-        self.proximity_check = 1
+        self.proximity_check = 3
         self.last_blynk_update = 0
         self.blynk_update_interval = 1
         self.move_detector = move_detector
@@ -261,6 +285,20 @@ class StreamingHandler(server.BaseHTTPRequestHandler):
                 logging.warning(
                     'Removed streaming client %s: %s',
                     self.client_address, str(e))
+
+        elif self.path == '/data.json':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            #Blynk data as JSON as my Blynk could no longer recieve messages
+            data = {
+                'move_status': blynk.virtual_read(MOVE_STATUS),
+                'proximity_alert': blynk.virtual_read(PROXIMITY_ALERT),
+                'object_count': blynk.virutal_read(OBJECT_COUNT),
+                'video_status': blynk.virtual_read(VIDEO_STATUS),
+                'movement': blynk.virtual_read(MOVEMENT)
+            }
+            self.wfile.write(json.dumps(data).encode('utf-8'))
         else:
             self.send_error(404)
             self.end_headers()
